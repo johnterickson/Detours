@@ -2697,7 +2697,7 @@ BOOL WINAPI Mine_CreateHardLinkA(LPCSTR a0,
 
     BOOL rv = 0;
     __try {
-        if (TRUE == NoteAndOverrideCopy(a0, a1, COPY_FILE_FAIL_IF_EXISTS)) {
+        if (TRUE == NoteAndOverrideCopy(a1, a0, COPY_FILE_FAIL_IF_EXISTS)) {
             rv = TRUE;
             SetLastError(0);
         } else {
@@ -2722,7 +2722,7 @@ BOOL WINAPI Mine_CreateHardLinkW(LPCWSTR a0,
 
     BOOL rv = 0;
     __try {
-        if (TRUE == NoteAndOverrideCopy(a0, a1, COPY_FILE_FAIL_IF_EXISTS)) {
+        if (TRUE == NoteAndOverrideCopy(a1, a0, COPY_FILE_FAIL_IF_EXISTS)) {
             rv = TRUE;
             SetLastError(0);
         } else {
@@ -2865,7 +2865,6 @@ BOOLEAN Clone(PCWSTR pwzSrc, PCWSTR pwzDst, BOOLEAN bFailIfExists)
 
     if (hSrc == INVALID_HANDLE_VALUE) {
         Print("<!-- CopyFile CreateFileW %d %le -> 0x%x -->\n", __LINE__, pwzSrc, hSrc);
-        __debugbreak();
         goto Exit0;
     }
 
