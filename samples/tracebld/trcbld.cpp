@@ -2971,7 +2971,7 @@ BOOLEAN NoteAndOverrideCopy(PCWSTR pwzSrc, PCWSTR pwzDst, DWORD dwCopyFlags)
     }
 
     if (Clone(pwzSrc, pwzDst, 0 != (dwCopyFlags & COPY_FILE_FAIL_IF_EXISTS))) {
-        Print("<!-- CopyFile %le to %le 0x%x (clone success) -->\n", pwzSrc, pwzDst, dwCopyFlags);
+        // Print("<!-- CopyFile %le to %le 0x%x (clone success) -->\n", pwzSrc, pwzDst, dwCopyFlags);
         return TRUE;
     } else {
         Print("<!-- CopyFile %le to %le 0x%x (clone failed 0x%x) -->\n", pwzSrc, pwzDst, dwCopyFlags, GetLastError());
