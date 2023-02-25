@@ -3942,7 +3942,7 @@ BOOLEAN Clone(PCWSTR pwzSrc, PCWSTR pwzDst, BOOLEAN bFailIfExists)
         LONGLONG size = MIN(roundedUp - sourceOffset, MaxChunkSize);
         extents.ByteCount.QuadPart = size;
 
-        if(DeviceIoControl(
+        if(!DeviceIoControl(
             hDst,
             FSCTL_DUPLICATE_EXTENTS_TO_FILE,
             &extents, sizeof(extents),
@@ -3950,8 +3950,6 @@ BOOLEAN Clone(PCWSTR pwzSrc, PCWSTR pwzDst, BOOLEAN bFailIfExists)
             &dwBytesReturned,
             NULL
         )) {
-            Print("<!-- CopyFile DeviceIoControl %d -> 0x%x -->\n", __LINE__,  GetLastError());
-        } else {
             Print("<!-- CopyFile DeviceIoControl %d -> 0x%x -->\n", __LINE__,  GetLastError());
             goto Exit1;
         }
