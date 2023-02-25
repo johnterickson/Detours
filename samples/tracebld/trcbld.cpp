@@ -2656,8 +2656,6 @@ BOOL WINAPI Mine_CopyFileExW(LPCWSTR a0,
 #if 0
             Print("<!-- CopyFileExW %le to %le -->\n", a0, a1);
 #endif
-            NoteRead(a0);
-            NoteWrite(a1);
         }
     };
     return rv;
@@ -2686,8 +2684,6 @@ BOOL WINAPI Mine_PrivCopyFileExW(LPCWSTR a0,
 #if 0
             Print("<!-- PrivCopyFileExW %le to %le -->\n", a0, a1);
 #endif
-            NoteRead(a0);
-            NoteWrite(a1);
         }
     };
     return rv;
@@ -2701,15 +2697,18 @@ BOOL WINAPI Mine_CreateHardLinkA(LPCSTR a0,
 
     BOOL rv = 0;
     __try {
-        rv = Real_CreateHardLinkA(a0, a1, a2);
+        if (TRUE == NoteAndOverrideCopy(a0, a1, COPY_FILE_FAIL_IF_EXISTS)) {
+            rv = TRUE;
+            SetLastError(0);
+        } else {
+             rv = Real_CreateHardLinkA(a0, a1, a2);
+        }
     } __finally {
         ExitFunc();
         if (rv) {
 #if 0
             Print("<!-- CreateHardLinkA %he to %he -->\n", a0, a1);
 #endif
-            NoteRead(a1);
-            NoteWrite(a0);
         }
     };
     return rv;
@@ -2723,15 +2722,18 @@ BOOL WINAPI Mine_CreateHardLinkW(LPCWSTR a0,
 
     BOOL rv = 0;
     __try {
-        rv = Real_CreateHardLinkW(a0, a1, a2);
+        if (TRUE == NoteAndOverrideCopy(a0, a1, COPY_FILE_FAIL_IF_EXISTS)) {
+            rv = TRUE;
+            SetLastError(0);
+        } else {
+            rv = Real_CreateHardLinkW(a0, a1, a2);
+        }
     } __finally {
         ExitFunc();
         if (rv) {
 #if 0
             Print("<!-- CreateHardLinkW %le to %le -->\n", a0, a1);
 #endif
-            NoteRead(a1);
-            NoteWrite(a0);
         }
     };
     return rv;
@@ -2860,14 +2862,16 @@ BOOLEAN Clone(PCWSTR pwzSrc, PCWSTR pwzDst, BOOLEAN bFailIfExists)
         FILE_ATTRIBUTE_NORMAL, // | FILE_ATTRIBUTE no bu
         NULL
     );
-    Print("<!-- CopyFile CreateFileW %d %le -> 0x%x -->\n", __LINE__, pwzSrc, hSrc);
 
     if (hSrc == INVALID_HANDLE_VALUE) {
+        Print("<!-- CopyFile CreateFileW %d %le -> 0x%x -->\n", __LINE__, pwzSrc, hSrc);
+        __debugbreak();
         goto Exit0;
     }
 
     BY_HANDLE_FILE_INFORMATION fileInfo;
     if(!GetFileInformationByHandle(hSrc, &fileInfo)) {
+        Print("<!-- CopyFile GetFileInformationByHandle %d %le -> 0x%x -->\n", __LINE__, pwzSrc, hSrc);
         goto Exit0;
     }
 
@@ -2880,16 +2884,16 @@ BOOLEAN Clone(PCWSTR pwzSrc, PCWSTR pwzDst, BOOLEAN bFailIfExists)
         FILE_ATTRIBUTE_NORMAL, // | FILE_ATTRIBUTE no bu
         NULL
     );
-    Print("<!-- CopyFile CreateFileW %d %le -> 0x%x -->\n", __LINE__, pwzDst, hDst);
 
     if (hDst == INVALID_HANDLE_VALUE) {
+        Print("<!-- CopyFile CreateFileW %d %le -> 0x%x -->\n", __LINE__, pwzDst, hDst);
         goto Exit0;
     }
 
-    if (fileInfo.nFileSizeHigh == 0 && fileInfo.nFileSizeLow == 0) {
-        result = TRUE;
-        goto Exit1;
-    }
+    // if (fileInfo.nFileSizeHigh == 0 && fileInfo.nFileSizeLow == 0) {
+    //     result = TRUE;
+    //     goto Exit1;
+    // }
 
     DWORD dwBytesReturned;
     if(!DeviceIoControl(
