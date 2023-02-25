@@ -7,7 +7,7 @@
 //  Copyright (c) Microsoft Corporation.  All rights reserved.
 //
 
-#define _WIN32_WINNT        0x0501
+#define _WIN32_WINNT        _WIN32_WINNT_WINBLUE
 #define WIN32
 #define NT
 
@@ -75,6 +75,10 @@ PCHAR SafePrintf(PCHAR pszBuffer, LONG cbBuffer, PCSTR pszMsg, ...);
 LONG EnterFunc();
 VOID ExitFunc();
 VOID Print(PCSTR psz, ...);
+struct FileInfo;
+BOOLEAN NoteAndOverrideCopy(FileInfo *pSrc, FileInfo *pDst, DWORD dwCopyFlags);
+BOOLEAN NoteAndOverrideCopy(PCSTR pszSrc, PCSTR pszDst, DWORD dwCopyFlags);
+BOOLEAN NoteAndOverrideCopy(PCWSTR pwzSrc, PCWSTR pwzDst, DWORD dwCopyFlags);
 VOID NoteRead(PCSTR psz);
 VOID NoteRead(PCWSTR pwz);
 VOID NoteWrite(PCSTR psz);
@@ -2610,15 +2614,18 @@ BOOL WINAPI Mine_CopyFileExA(LPCSTR a0,
 
     BOOL rv = 0;
     __try {
-        rv = Real_CopyFileExA(a0, a1, a2, a3, a4, a5);
+        if (TRUE == NoteAndOverrideCopy(a0, a1, a5)) {
+            rv = TRUE;
+            SetLastError(0);
+        } else {
+            rv = Real_CopyFileExA(a0, a1, a2, a3, a4, a5);
+        }
     } __finally {
         ExitFunc();
         if (rv) {
 #if 0
             Print("<!-- CopyFileExA %he to %he -->\n", a0, a1);
 #endif
-            NoteRead(a0);
-            NoteWrite(a1);
         }
     };
     return rv;
@@ -2639,7 +2646,12 @@ BOOL WINAPI Mine_CopyFileExW(LPCWSTR a0,
         Print("\n");
         Print("<!-- CopyFileExW %le to %le before -->\n", a0, a1);
 #endif
-        rv = Real_CopyFileExW(a0, a1, a2, a3, a4, a5);
+        if (TRUE == NoteAndOverrideCopy(a0, a1, a5)) {
+            rv = TRUE;
+            SetLastError(0);
+        } else {
+            rv = Real_CopyFileExW(a0, a1, a2, a3, a4, a5);
+        }
     } __finally {
         ExitFunc();
         if (rv) {
@@ -2664,7 +2676,12 @@ BOOL WINAPI Mine_PrivCopyFileExW(LPCWSTR a0,
 
     BOOL rv = 0;
     __try {
-        rv = Real_PrivCopyFileExW(a0, a1, a2, a3, a4, a5);
+        if (TRUE == NoteAndOverrideCopy(a0, a1, a5)) {
+            rv = TRUE;
+            SetLastError(0);
+        } else {
+            rv = Real_PrivCopyFileExW(a0, a1, a2, a3, a4, a5);
+        }
     } __finally {
         ExitFunc();
         if (rv) {
@@ -3842,6 +3859,156 @@ LONG DetachDetours(VOID)
 //
 //////////////////////////////////////////////////////////////////////////////
 
+// Each cloned region must be < 4GB in length. Use a smaller default.
+const LONGLONG MaxChunkSize = 1LL << 31;  // 2GB
+const LONGLONG ClusterSize = 4096;
+#define MIN(x,y) ((x)<(y) ? (x) : (y))
+
+// https://github.com/microsoft/CopyOnWrite/blob/main/lib/Windows/WindowsCopyOnWriteFilesystem.cs
+BOOLEAN Clone(PCWSTR pwzSrc, PCWSTR pwzDst, BOOLEAN bFailIfExists)
+{
+    BOOLEAN result = FALSE;
+    HANDLE hSrc = Real_CreateFileW(
+        pwzSrc,
+        FILE_READ_ACCESS,
+        FILE_SHARE_READ | FILE_SHARE_DELETE,
+        NULL,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL, // | FILE_ATTRIBUTE no bu
+        NULL
+    );
+    Print("<!-- CopyFile CreateFileW %d %le -> 0x%x -->\n", __LINE__, pwzSrc, hSrc);
+
+    if (hSrc == INVALID_HANDLE_VALUE) {
+        goto Exit0;
+    }
+
+    BY_HANDLE_FILE_INFORMATION fileInfo;
+    if(!GetFileInformationByHandle(hSrc, &fileInfo)) {
+        goto Exit0;
+    }
+
+    HANDLE hDst = Real_CreateFileW(
+        pwzDst,
+        FILE_WRITE_ACCESS,
+        FILE_SHARE_DELETE,
+        NULL,
+        bFailIfExists != FALSE ? CREATE_NEW : CREATE_ALWAYS,
+        FILE_ATTRIBUTE_NORMAL, // | FILE_ATTRIBUTE no bu
+        NULL
+    );
+    Print("<!-- CopyFile CreateFileW %d %le -> 0x%x -->\n", __LINE__, pwzDst, hDst);
+
+    if (hDst == INVALID_HANDLE_VALUE) {
+        goto Exit0;
+    }
+
+    if (fileInfo.nFileSizeHigh == 0 && fileInfo.nFileSizeLow == 0) {
+        result = TRUE;
+        goto Exit1;
+    }
+
+    DWORD dwBytesReturned;
+    if(!DeviceIoControl(
+        hDst,
+        FSCTL_SET_SPARSE,
+        NULL, 0,
+        NULL, 0,
+        &dwBytesReturned,
+        NULL))
+    {
+        Print("<!-- CopyFile DeviceIoControl %d -> 0x%x -->\n", __LINE__,  GetLastError());
+        goto Exit1;
+    }
+
+    FILE_END_OF_FILE_INFO destEndOfFileInfo;
+    destEndOfFileInfo.EndOfFile.HighPart = fileInfo.nFileSizeHigh;
+    destEndOfFileInfo.EndOfFile.LowPart = fileInfo.nFileSizeLow;
+    if (!SetFileInformationByHandle(hDst, FileEndOfFileInfo, &destEndOfFileInfo, sizeof(destEndOfFileInfo))) {
+        Print("<!-- CopyFile SetFileInformationByHandle %d -> 0x%x -->\n", __LINE__,  GetLastError());
+        goto Exit1;
+    }
+
+    DUPLICATE_EXTENTS_DATA extents;
+    extents.FileHandle = hSrc;
+
+    LONGLONG fileLength = destEndOfFileInfo.EndOfFile.QuadPart;
+    LONGLONG roundedUp =  ((fileLength - 1 + ClusterSize) / ClusterSize) * ClusterSize;
+    LONGLONG sourceOffset = 0;
+
+    while (sourceOffset < fileLength) {
+        extents.SourceFileOffset.QuadPart = sourceOffset;
+        extents.TargetFileOffset.QuadPart = sourceOffset;
+        LONGLONG size = MIN(roundedUp - sourceOffset, MaxChunkSize);
+        extents.ByteCount.QuadPart = size;
+
+        if(DeviceIoControl(
+            hDst,
+            FSCTL_DUPLICATE_EXTENTS_TO_FILE,
+            &extents, sizeof(extents),
+            NULL, 0,
+            &dwBytesReturned,
+            NULL
+        )) {
+            Print("<!-- CopyFile DeviceIoControl %d -> 0x%x -->\n", __LINE__,  GetLastError());
+        } else {
+            Print("<!-- CopyFile DeviceIoControl %d -> 0x%x -->\n", __LINE__,  GetLastError());
+            goto Exit1;
+        }
+
+        sourceOffset += size;
+    }
+
+
+    result = TRUE;
+
+Exit1:
+    CloseHandle(hDst);
+    if (result != TRUE) {
+        DeleteFileW(pwzDst);
+    }
+
+Exit0:
+    CloseHandle(hSrc);
+
+    return result;
+}
+
+// const DWORD COPY_FILE_COPY_SYMLINK = 0x00000800;
+
+BOOLEAN NoteAndOverrideCopy(FileInfo *pSrc, FileInfo *pDst, DWORD dwCopyFlags)
+{
+    pSrc->m_fRead = TRUE;
+    pDst->m_fRead = TRUE;
+
+    if (0 != (dwCopyFlags & (COPY_FILE_COPY_SYMLINK|COPY_FILE_OPEN_SOURCE_FOR_WRITE))) {
+        Print("<!-- CopyFile %le to %le 0x%x (clone skipped) -->\n", pSrc->m_pwzPath, pDst->m_pwzPath, dwCopyFlags);
+        return FALSE;
+    }
+
+    if (Clone(pSrc->m_pwzPath, pDst->m_pwzPath, 0 != (dwCopyFlags & COPY_FILE_FAIL_IF_EXISTS))) {
+        Print("<!-- CopyFile %le to %le 0x%x (clone success) -->\n", pSrc->m_pwzPath, pDst->m_pwzPath, dwCopyFlags);
+        return TRUE;
+    } else {
+        Print("<!-- CopyFile %le to %le 0x%x (clone failed 0x%x) -->\n", pSrc->m_pwzPath, pDst->m_pwzPath, dwCopyFlags, GetLastError());
+        return FALSE;
+    }
+}
+
+BOOLEAN NoteAndOverrideCopy(PCSTR pszSrc, PCSTR pszDst, DWORD dwCopyFlags)
+{
+    FileInfo *pSrc = FileNames::FindPartial(pszSrc);
+    FileInfo *pDst = FileNames::FindPartial(pszDst);
+    return NoteAndOverrideCopy(pSrc, pDst, dwCopyFlags);
+}
+
+BOOLEAN NoteAndOverrideCopy(PCWSTR pwzSrc, PCWSTR pwzDst, DWORD dwCopyFlags)
+{
+    FileInfo *pSrc = FileNames::FindPartial(pwzSrc);
+    FileInfo *pDst = FileNames::FindPartial(pwzDst);
+    return NoteAndOverrideCopy(pSrc, pDst, dwCopyFlags);
+}
+
 VOID NoteRead(PCSTR psz)
 {
     FileInfo *pInfo = FileNames::FindPartial(psz);
@@ -3921,39 +4088,40 @@ static LONG s_nThreadCnt = 0;
 
 LONG EnterFunc()
 {
-    DWORD dwErr = GetLastError();
+    return 0;
+    // DWORD dwErr = GetLastError();
 
-    LONG nIndent = 0;
-    LONG nThread = 0;
-    if (s_nTlsIndent >= 0) {
-        nIndent = (LONG)(LONG_PTR)TlsGetValue(s_nTlsIndent);
-        TlsSetValue(s_nTlsIndent, (PVOID)(LONG_PTR)(nIndent + 1));
-    }
-    if (s_nTlsThread >= 0) {
-        nThread = (LONG)(LONG_PTR)TlsGetValue(s_nTlsThread);
-    }
+    // LONG nIndent = 0;
+    // LONG nThread = 0;
+    // if (s_nTlsIndent >= 0) {
+    //     nIndent = (LONG)(LONG_PTR)TlsGetValue(s_nTlsIndent);
+    //     TlsSetValue(s_nTlsIndent, (PVOID)(LONG_PTR)(nIndent + 1));
+    // }
+    // if (s_nTlsThread >= 0) {
+    //     nThread = (LONG)(LONG_PTR)TlsGetValue(s_nTlsThread);
+    // }
 
-    SetLastError(dwErr);
+    // SetLastError(dwErr);
 
-    return nIndent;
+    // return nIndent;
 }
 
 VOID ExitFunc()
 {
-    DWORD dwErr = GetLastError();
+    // DWORD dwErr = GetLastError();
 
-    LONG nIndent = 0;
-    LONG nThread = 0;
-    if (s_nTlsIndent >= 0) {
-        nIndent = (LONG)(LONG_PTR)TlsGetValue(s_nTlsIndent) - 1;
-        ASSERT(nIndent >= 0);
-        TlsSetValue(s_nTlsIndent, (PVOID)(LONG_PTR)nIndent);
-    }
-    if (s_nTlsThread >= 0) {
-        nThread = (LONG)(LONG_PTR)TlsGetValue(s_nTlsThread);
-    }
+    // LONG nIndent = 0;
+    // LONG nThread = 0;
+    // if (s_nTlsIndent >= 0) {
+    //     nIndent = (LONG)(LONG_PTR)TlsGetValue(s_nTlsIndent) - 1;
+    //     ASSERT(nIndent >= 0);
+    //     TlsSetValue(s_nTlsIndent, (PVOID)(LONG_PTR)nIndent);
+    // }
+    // if (s_nTlsThread >= 0) {
+    //     nThread = (LONG)(LONG_PTR)TlsGetValue(s_nTlsThread);
+    // }
 
-    SetLastError(dwErr);
+    // SetLastError(dwErr);
 }
 
 VOID Print(const CHAR *psz, ...)
