@@ -75,8 +75,6 @@ PCHAR SafePrintf(PCHAR pszBuffer, LONG cbBuffer, PCSTR pszMsg, ...);
 LONG EnterFunc();
 VOID ExitFunc();
 VOID Print(PCSTR psz, ...);
-struct FileInfo;
-BOOLEAN NoteAndOverrideCopy(FileInfo *pSrc, FileInfo *pDst, DWORD dwCopyFlags);
 BOOLEAN NoteAndOverrideCopy(PCSTR pszSrc, PCSTR pszDst, DWORD dwCopyFlags);
 BOOLEAN NoteAndOverrideCopy(PCWSTR pwzSrc, PCWSTR pwzDst, DWORD dwCopyFlags);
 VOID NoteRead(PCSTR psz);
@@ -1249,13 +1247,13 @@ FileInfo * FileNames::FindPartial(PCWSTR pwzPath)
     }
 }
 
-FileInfo * FileNames::FindPartial(PCSTR pwzPath)
+FileInfo * FileNames::FindPartial(PCSTR pzPath)
 {
     WCHAR wzPath[MAX_PATH];
     PWCHAR pwzFile = wzPath;
 
-    while (*pwzPath) {
-        *pwzFile++ = *pwzPath++;
+    while (*pzPath) {
+        *pwzFile++ = *pzPath++;
     }
     *pwzFile = '\0';
 
@@ -2739,1014 +2737,6 @@ BOOL WINAPI Mine_CreateHardLinkW(LPCWSTR a0,
     return rv;
 }
 
-BOOL WINAPI Mine_CloseHandle(HANDLE a0)
-{
-    /*int nIndent =*/ EnterFunc();
-
-    BOOL rv = 0;
-    __try {
-        ProcInfo * pProc = OpenFiles::RecallProc(a0);
-        if (pProc != NULL) {
-            Procs::Close(pProc->m_hProc);
-        }
-
-        FileInfo * pFile = OpenFiles::RecallFile(a0);
-        if (pFile != NULL) {
-            DWORD dwErr = GetLastError();
-            pFile->m_cbContent = GetFileSize(a0, NULL);
-            if (pFile->m_cbContent == INVALID_FILE_SIZE) {
-                pFile->m_cbContent = 0;
-            }
-
-            if (pFile->m_fCantRead) {
-                if (pFile->m_fRead) {
-#if 0
-                    Print("<!-- Warning: Removing read from %le -->\n", pFile->m_pwzPath);
-#endif
-                    pFile->m_fRead = FALSE;
-                }
-            }
-
-            // Here we should think about reading the file contents as appropriate.
-            if (pFile->m_fTemporaryPath && pFile->m_fRead && !pFile->m_fAbsorbed &&
-                !pFile->m_fDelete && !pFile->m_fCleanup && !pFile->m_fWrite &&
-                pFile->m_pbContent == NULL &&
-                pFile->m_cbContent < 16384) {
-
-                pFile->m_pbContent = LoadFile(a0, pFile->m_cbContent);
-            }
-
-            SetLastError(dwErr);
-        }
-        rv = Real_CloseHandle(a0);
-    } __finally {
-        ExitFunc();
-        if (rv /* && nIndent == 0*/) {
-            OpenFiles::Forget(a0);
-        }
-    };
-    return rv;
-}
-
-BOOL WINAPI Mine_DuplicateHandle(HANDLE hSourceProcessHandle,
-                                 HANDLE hSourceHandle,
-                                 HANDLE hTargetProcessHandle,
-                                 LPHANDLE lpTargetHandle,
-                                 DWORD dwDesiredAccess,
-                                 BOOL bInheritHandle,
-                                 DWORD dwOptions)
-{
-    HANDLE hTemp = INVALID_HANDLE_VALUE;
-    EnterFunc();
-
-    BOOL rv = 0;
-    __try {
-        if (lpTargetHandle == NULL) {
-            lpTargetHandle = &hTemp;
-        }
-        *lpTargetHandle = INVALID_HANDLE_VALUE;
-
-        rv = Real_DuplicateHandle(hSourceProcessHandle,
-                                  hSourceHandle,
-                                  hTargetProcessHandle,
-                                  lpTargetHandle,
-                                  dwDesiredAccess,
-                                  bInheritHandle,
-                                  dwOptions);
-    } __finally {
-        ExitFunc();
-        if (*lpTargetHandle != INVALID_HANDLE_VALUE) {
-            FileInfo *pInfo = OpenFiles::RecallFile(hSourceHandle);
-            if (pInfo) {
-                OpenFiles::Remember(*lpTargetHandle, pInfo);
-            }
-        }
-    };
-    return rv;
-}
-
-static LONG s_nPipeCnt = 0;
-
-BOOL WINAPI Mine_CreatePipe(PHANDLE hReadPipe,
-                            PHANDLE hWritePipe,
-                            LPSECURITY_ATTRIBUTES lpPipeAttributes,
-                            DWORD nSize)
-{
-    HANDLE hRead = INVALID_HANDLE_VALUE;
-    HANDLE hWrite = INVALID_HANDLE_VALUE;
-
-    if (hReadPipe == NULL) {
-        hReadPipe = &hRead;
-    }
-    if (hWritePipe == NULL) {
-        hWritePipe = &hWrite;
-    }
-
-    /*int nIndent = */ EnterFunc();
-    BOOL rv = 0;
-    __try {
-        rv = Real_CreatePipe(hReadPipe, hWritePipe, lpPipeAttributes, nSize);
-    } __finally {
-        ExitFunc();
-        if (rv) {
-            CHAR szPipe[128];
-
-            SafePrintf(szPipe, ARRAYSIZE(szPipe), "\\\\.\\PIPE\\Temp.%d.%d",
-                       GetCurrentProcessId(),
-                       InterlockedIncrement(&s_nPipeCnt));
-
-            FileInfo *pInfo = FileNames::FindPartial(szPipe);
-
-            pInfo->m_fCleanup = TRUE;
-            OpenFiles::Remember(*hReadPipe, pInfo);
-            OpenFiles::Remember(*hWritePipe, pInfo);
-        }
-    };
-    return rv;
-}
-
-BOOL WINAPI Mine_CreateDirectoryW(LPCWSTR a0,
-                                  LPSECURITY_ATTRIBUTES a1)
-{
-    /* int nIndent = */ EnterFunc();
-    BOOL rv = 0;
-    __try {
-        rv = Real_CreateDirectoryW(a0, a1);
-    } __finally {
-        ExitFunc();
-        if (rv) {
-            FileInfo *pInfo = FileNames::FindPartial(a0);
-            pInfo->m_fDirectory = TRUE;
-        }
-    };
-    return rv;
-}
-
-BOOL WINAPI Mine_CreateDirectoryExW(LPCWSTR a0,
-                                    LPCWSTR a1,
-                                    LPSECURITY_ATTRIBUTES a2)
-{
-    /* int nIndent = */ EnterFunc();
-    BOOL rv = 0;
-    __try {
-        rv = Real_CreateDirectoryExW(a0, a1, a2);
-    } __finally {
-        ExitFunc();
-        if (rv) {
-            FileInfo *pInfo = FileNames::FindPartial(a1);
-            pInfo->m_fDirectory = TRUE;
-        }
-    };
-    return rv;
-}
-
-HANDLE WINAPI Mine_CreateFileW(LPCWSTR a0,
-                               DWORD access,
-                               DWORD share,
-                               LPSECURITY_ATTRIBUTES a3,
-                               DWORD create,
-                               DWORD flags,
-                               HANDLE a6)
-{
-    /* int nIndent = */ EnterFunc();
-    HANDLE rv = 0;
-    __try {
-        rv = Real_CreateFileW(a0, access, share, a3, create, flags, a6);
-    } __finally {
-        ExitFunc();
-#if 0
-            Print("<!-- CreateFileW(%le, ac=%08x, cr=%08x, fl=%08x -->\n",
-                  a0,
-                  access,
-                  create,
-                  flags);
-#endif
-
-        if (access != 0 && /* nIndent == 0 && */ rv != INVALID_HANDLE_VALUE) {
-
-            FileInfo *pInfo = FileNames::FindPartial(a0);
-
-            // FILE_FLAG_WRITE_THROUGH              0x80000000
-            // FILE_FLAG_OVERLAPPED                 0x40000000
-            // FILE_FLAG_NO_BUFFERING               0x20000000
-            // FILE_FLAG_RANDOM_ACCESS              0x10000000
-            // FILE_FLAG_SEQUENTIAL_SCAN            0x08000000
-            // FILE_FLAG_DELETE_ON_CLOSE            0x04000000
-            // FILE_FLAG_BACKUP_SEMANTICS           0x02000000
-            // FILE_FLAG_POSIX_SEMANTICS            0x01000000
-            // FILE_FLAG_OPEN_REPARSE_POINT         0x00200000
-            // FILE_FLAG_OPEN_NO_RECALL             0x00100000
-            // FILE_FLAG_FIRST_PIPE_INSTANCE        0x00080000
-            // FILE_ATTRIBUTE_ENCRYPTED             0x00004000
-            // FILE_ATTRIBUTE_NOT_CONTENT_INDEXED   0x00002000
-            // FILE_ATTRIBUTE_OFFLINE               0x00001000
-            // FILE_ATTRIBUTE_COMPRESSED            0x00000800
-            // FILE_ATTRIBUTE_REPARSE_POINT         0x00000400
-            // FILE_ATTRIBUTE_SPARSE_FILE           0x00000200
-            // FILE_ATTRIBUTE_TEMPORARY             0x00000100
-            // FILE_ATTRIBUTE_NORMAL                0x00000080
-            // FILE_ATTRIBUTE_DEVICE                0x00000040
-            // FILE_ATTRIBUTE_ARCHIVE               0x00000020
-            // FILE_ATTRIBUTE_DIRECTORY             0x00000010
-            // FILE_ATTRIBUTE_SYSTEM                0x00000004
-            // FILE_ATTRIBUTE_HIDDEN                0x00000002
-            // FILE_ATTRIBUTE_READONLY              0x00000001
-
-            // CREATE_NEW          1
-            // CREATE_ALWAYS       2
-            // OPEN_EXISTING       3
-            // OPEN_ALWAYS         4
-            // TRUNCATE_EXISTING   5
-
-            if (create == CREATE_NEW ||
-                create == CREATE_ALWAYS ||
-                create == TRUNCATE_EXISTING) {
-
-                if (!pInfo->m_fRead) {
-                    pInfo->m_fCantRead = TRUE;
-                }
-            }
-            else if (create == OPEN_EXISTING) {
-            }
-            else if (create == OPEN_ALWAYS) {
-                // pInfo->m_fAppend = TRUE;    // !!!
-            }
-
-            if ((flags & FILE_FLAG_DELETE_ON_CLOSE)) {
-                pInfo->m_fCleanup = TRUE;
-            }
-
-            OpenFiles::Remember(rv, pInfo);
-        }
-    };
-    return rv;
-}
-
-HANDLE WINAPI Mine_CreateFileMappingW(HANDLE hFile,
-                                      LPSECURITY_ATTRIBUTES a1,
-                                      DWORD flProtect,
-                                      DWORD a3,
-                                      DWORD a4,
-                                      LPCWSTR a5)
-{
-    /* int nIndent = */ EnterFunc();
-    HANDLE rv = 0;
-    __try {
-        rv = Real_CreateFileMappingW(hFile, a1, flProtect, a3, a4, a5);
-    } __finally {
-        ExitFunc();
-        if (rv != INVALID_HANDLE_VALUE) {
-
-            FileInfo *pInfo = OpenFiles::RecallFile(hFile);
-
-            if (pInfo != NULL) {
-                switch (flProtect) {
-                  case PAGE_READONLY:
-                    pInfo->m_fRead = TRUE;
-                    break;
-                  case PAGE_READWRITE:
-                    pInfo->m_fRead = TRUE;
-                    pInfo->m_fWrite = TRUE;
-                    break;
-                  case PAGE_WRITECOPY:
-                    pInfo->m_fRead = TRUE;
-                    break;
-                  case PAGE_EXECUTE_READ:
-                    pInfo->m_fRead = TRUE;
-                    break;
-                  case PAGE_EXECUTE_READWRITE:
-                    pInfo->m_fRead = TRUE;
-                    pInfo->m_fWrite = TRUE;
-                    break;
-                }
-            }
-        }
-    };
-    return rv;
-}
-
-BOOL WINAPI Mine_DeleteFileW(LPCWSTR a0)
-{
-    EnterFunc();
-
-    BOOL rv = 0;
-    __try {
-        rv = Real_DeleteFileW(a0);
-    } __finally {
-        ExitFunc();
-#if 0
-        Print("<!-- DeleteFileW(%le -->\n", a0);
-#endif
-        NoteDelete(a0);
-    };
-    return rv;
-}
-
-static VOID Dump(LPVOID pvData, DWORD cbData)
-{
-    CHAR szBuffer[128];
-    PBYTE pbData = (PBYTE)pvData;
-
-    for (DWORD i = 0; i < cbData; i += 16) {
-        PCHAR psz = szBuffer;
-        psz = SafePrintf(psz, (LONG)(szBuffer + ARRAYSIZE(szBuffer) - psz), "%4d: ", i);
-
-        for (DWORD j = i; j < i + 16; j++) {
-            if (j < cbData) {
-                psz = SafePrintf(psz, (LONG)(szBuffer + ARRAYSIZE(szBuffer) - psz),
-                                 "%02x", pbData[j]);
-            }
-            else {
-                psz = SafePrintf(psz, (LONG)(szBuffer + ARRAYSIZE(szBuffer) - psz), "  ");
-            }
-        }
-
-        for (DWORD j = i; j < i + 16; j++) {
-            if (j < cbData) {
-                if (pbData[j] >= ' ' && pbData[j] <= 127) {
-                    psz = SafePrintf(psz, (LONG)(szBuffer + ARRAYSIZE(szBuffer) - psz),
-                                     "%c", pbData[j]);
-                }
-                else {
-                    psz = SafePrintf(psz, (LONG)(szBuffer + ARRAYSIZE(szBuffer) - psz), ".");
-                }
-            }
-            else {
-                psz = SafePrintf(psz, (LONG)(szBuffer + ARRAYSIZE(szBuffer) - psz), " ");
-            }
-        }
-        Print("%s\n", szBuffer);
-    }
-}
-
-BOOL WINAPI Mine_DeviceIoControl(HANDLE a0,
-                                 DWORD a1,
-                                 LPVOID a2,
-                                 DWORD a3,
-                                 LPVOID a4,
-                                 DWORD a5,
-                                 LPDWORD a6,
-                                 LPOVERLAPPED a7)
-{
-    EnterFunc();
-    DWORD d6 = 0;
-    if (a6 == NULL) {
-        a6 = &d6;
-
-    }
-
-    BOOL rv = 0;
-    __try {
-        rv = Real_DeviceIoControl(a0, a1, a2, a3, a4, a5, a6, a7);
-    } __finally {
-        ExitFunc();
-        OpenFiles::SetRead(a0, 0);
-        OpenFiles::SetWrite(a0, 0);
-        if (rv && a1 != 0x390008 && a1 != 0x4d0008 && a1 != 0x6d0008) {
-            FileInfo *pInfo = OpenFiles::RecallFile(a0);
-
-            DWORD DeviceType    = (a1 & 0xffff0000) >> 16;
-            DWORD Access        = (a1 & 0x0000c000) >> 14;
-            DWORD Function      = (a1 & 0x00003ffc) >> 2;
-            DWORD Method        = (a1 & 0x00000003) >> 0;
-
-            if (pInfo) {
-                Print("<!-- DeviceIoControl %x [dev=%x,acc=%x,fun=%x,mth=%x] on %ls! -->\n",
-                      a1, DeviceType, Access, Function, Method, pInfo->m_pwzPath);
-            }
-            else {
-                Print("<!-- DeviceIoControl %x [dev=%x,acc=%x,fun=%x,mth=%x,in=%d,out=%d/%d] on (%x)! -->\n",
-                      a1, DeviceType, Access, Function, Method, a3, *a6, a5, a0);
-
-                if (a3 > 0) {
-                    Dump(a2, a3);
-                }
-                if (a5 > 0) {
-                    Dump(a4, (*a6 < a5) ? *a6 : a5);
-                }
-            }
-        }
-    };
-    return rv;
-}
-
-DWORD WINAPI Mine_GetFileAttributesW(LPCWSTR a0)
-{
-    EnterFunc();
-
-    DWORD rv = 0;
-    __try {
-        rv = Real_GetFileAttributesW(a0);
-    } __finally {
-        ExitFunc();
-    };
-    return rv;
-}
-
-BOOL WINAPI Mine_MoveFileWithProgressW(LPCWSTR a0,
-                                       LPCWSTR a1,
-                                       LPPROGRESS_ROUTINE a2,
-                                       LPVOID a3,
-                                       DWORD a4)
-{
-    EnterFunc();
-
-    BOOL rv = 0;
-    __try {
-        rv = Real_MoveFileWithProgressW(a0, a1, a2, a3, a4);
-    } __finally {
-        ExitFunc();
-        if (rv) {
-            NoteRead(a0);
-            NoteWrite(a1);
-        }
-    };
-    return rv;
-}
-
-BOOL WINAPI Mine_MoveFileA(LPCSTR a0,
-                           LPCSTR a1)
-{
-    EnterFunc();
-
-    BOOL rv = 0;
-    __try {
-        rv = Real_MoveFileA(a0, a1);
-    } __finally {
-        ExitFunc();
-        if (rv) {
-            NoteRead(a0);
-            NoteCleanup(a0);
-            NoteWrite(a1);
-        }
-    };
-    return rv;
-}
-
-BOOL WINAPI Mine_MoveFileW(LPCWSTR a0,
-                           LPCWSTR a1)
-{
-    EnterFunc();
-
-    BOOL rv = 0;
-    __try {
-        rv = Real_MoveFileW(a0, a1);
-    } __finally {
-        ExitFunc();
-        if (rv) {
-            NoteRead(a0);
-            NoteCleanup(a0);
-            NoteWrite(a1);
-        }
-    };
-    return rv;
-}
-
-BOOL WINAPI Mine_MoveFileExA(LPCSTR a0,
-                             LPCSTR a1,
-                             DWORD a2)
-{
-    EnterFunc();
-
-    BOOL rv = 0;
-    __try {
-        rv = Real_MoveFileExA(a0, a1, a2);
-    } __finally {
-        ExitFunc();
-        if (rv) {
-            NoteRead(a0);
-            NoteCleanup(a0);
-            NoteWrite(a1);
-        }
-    };
-    return rv;
-}
-
-BOOL WINAPI Mine_MoveFileExW(LPCWSTR a0,
-                             LPCWSTR a1,
-                             DWORD a2)
-{
-    EnterFunc();
-
-    BOOL rv = 0;
-    __try {
-        rv = Real_MoveFileExW(a0, a1, a2);
-    } __finally {
-        ExitFunc();
-        if (rv) {
-            NoteRead(a0);
-            NoteCleanup(a0);
-            NoteWrite(a1);
-        }
-    };
-    return rv;
-}
-
-void SetHandle(PCSTR pszName, HANDLE h)
-{
-#if 0
-    FileInfo *pInfo = OpenFiles::RecallFile(h);
-
-    if (pInfo != NULL) {
-        Tblog("<!-- hset: %hs (%x) %ls -->\n", pszName, h, pInfo->m_pwzPath);
-    }
-    else {
-        Tblog("<!-- hset: %hs (%x) ***Unknown*** -->\n", pszName, h);
-    }
-#else
-    (void)pszName;
-    (void)h;
-#endif
-}
-
-
-BOOL WINAPI Mine_SetStdHandle(DWORD a0,
-                              HANDLE a1)
-{
-    EnterFunc();
-
-    BOOL rv = 0;
-    __try {
-        rv = Real_SetStdHandle(a0, a1);
-        if (rv && a1 != 0) {
-            switch (a0) {
-              case STD_INPUT_HANDLE:
-                SetHandle("stdin", a1);
-                break;
-              case STD_OUTPUT_HANDLE:
-                SetHandle("stdout", a1);
-                break;
-              case STD_ERROR_HANDLE:
-                SetHandle("stderr", a1);
-                break;
-            }
-        }
-    } __finally {
-        ExitFunc();
-    };
-    return rv;
-}
-
-HMODULE WINAPI Mine_LoadLibraryA(LPCSTR a0)
-{
-    EnterFunc();
-
-    HMODULE rv = 0;
-    __try {
-        rv = Real_LoadLibraryA(a0);
-    } __finally {
-        ExitFunc();
-    };
-    return rv;
-}
-
-HMODULE WINAPI Mine_LoadLibraryW(LPCWSTR a0)
-{
-    EnterFunc();
-
-    HMODULE rv = 0;
-    __try {
-        rv = Real_LoadLibraryW(a0);
-    } __finally {
-        ExitFunc();
-    };
-    return rv;
-}
-
-HMODULE WINAPI Mine_LoadLibraryExA(LPCSTR a0,
-                                   HANDLE a1,
-                                   DWORD a2)
-{
-    EnterFunc();
-
-    HMODULE rv = 0;
-    __try {
-        rv = Real_LoadLibraryExA(a0, a1, a2);
-    } __finally {
-        ExitFunc();
-    };
-    return rv;
-}
-
-HMODULE WINAPI Mine_LoadLibraryExW(LPCWSTR a0,
-                                   HANDLE a1,
-                                   DWORD a2)
-{
-    EnterFunc();
-
-    HMODULE rv = 0;
-    __try {
-        rv = Real_LoadLibraryExW(a0, a1, a2);
-    } __finally {
-        ExitFunc();
-    };
-    return rv;
-}
-
-DWORD WINAPI Mine_SetFilePointer(HANDLE hFile,
-                                 LONG lDistanceToMove,
-                                 PLONG lpDistanceToMoveHigh,
-                                 DWORD dwMoveMethod)
-{
-    EnterFunc();
-
-    DWORD rv = 0;
-    __try {
-        rv = Real_SetFilePointer(hFile,
-                                 lDistanceToMove,
-                                 lpDistanceToMoveHigh,
-                                 dwMoveMethod);
-    } __finally {
-        LONG high = 0;
-        if (lpDistanceToMoveHigh == NULL) {
-            lpDistanceToMoveHigh = &high;
-        }
-
-        FileInfo * pInfo = OpenFiles::RecallFile(hFile);
-        if (pInfo != NULL) {
-            if (dwMoveMethod == FILE_END && lDistanceToMove == 0xffffffff) {
-#if 0
-                Print("<!-- SetFilePointer(APPEND, %le) -->\n",
-                      pInfo->m_pwzPath);
-#endif
-                pInfo->m_fAppend = TRUE;
-            }
-#if 0
-            else if (dwMoveMethod == FILE_END) {
-                Print("<!-- SetFilePointer(END:%08x:%08x, %le) -->\n",
-                      (int)lDistanceToMove,
-                      *lpDistanceToMoveHigh,
-                      pInfo->m_pwzPath);
-            }
-            else if (dwMoveMethod == FILE_BEGIN) {
-                Print("<!-- SetFilePointer(BEG:%08x:%08x, %le) -->\n",
-                      (int)lDistanceToMove,
-                      *lpDistanceToMoveHigh,
-                      pInfo->m_pwzPath);
-            }
-            else if (dwMoveMethod == FILE_CURRENT) {
-                Print("<!-- SetFilePointer(CUR:%08x:%08x, %le) -->\n",
-                      (int)lDistanceToMove,
-                      *lpDistanceToMoveHigh,
-                      pInfo->m_pwzPath);
-            }
-#endif
-        }
-        ExitFunc();
-    };
-    return rv;
-}
-
-BOOL WINAPI Mine_SetFilePointerEx(HANDLE hFile,
-                                  LARGE_INTEGER liDistanceToMove,
-                                  PLARGE_INTEGER lpNewFilePointer,
-                                  DWORD dwMoveMethod)
-{
-    EnterFunc();
-
-    BOOL rv = 0;
-    __try {
-        rv = Real_SetFilePointerEx(hFile,
-                                   liDistanceToMove,
-                                   lpNewFilePointer,
-                                   dwMoveMethod);
-    } __finally {
-#if 0
-        FileInfo * pInfo = OpenFiles::RecallFile(hFile);
-        if (pInfo != NULL) {
-            if (dwMoveMethod == FILE_END) {
-                Print("<!-- SetFilePointerEx(END:%I64d, %le) -->\n",
-                      liDistanceToMove.QuadPart,
-                      pInfo->m_pwzPath);
-            }
-            else if (dwMoveMethod == FILE_BEGIN) {
-                Print("<!-- SetFilePointerEx(BEG:%I64d, %le) -->\n",
-                      liDistanceToMove.QuadPart,
-                      pInfo->m_pwzPath);
-            }
-            else if (dwMoveMethod == FILE_CURRENT) {
-                Print("<!-- SetFilePointerEx(CUR:%I64d, %le) -->\n",
-                      liDistanceToMove.QuadPart,
-                      pInfo->m_pwzPath);
-            }
-        }
-#endif
-        ExitFunc();
-    };
-    return rv;
-}
-
-BOOL WINAPI Mine_ReadFile(HANDLE a0,
-                          LPVOID a1,
-                          DWORD a2,
-                          LPDWORD a3,
-                          LPOVERLAPPED a4)
-{
-    EnterFunc();
-
-    BOOL rv = 0;
-    __try {
-        rv = Real_ReadFile(a0, a1, a2, a3, a4);
-    } __finally {
-        if (rv) {
-            OpenFiles::SetRead(a0, a2);
-        }
-        ExitFunc();
-    };
-    return rv;
-}
-
-BOOL WINAPI Mine_ReadFileEx(HANDLE a0,
-                            LPVOID a1,
-                            DWORD a2,
-                            LPOVERLAPPED a3,
-                            LPOVERLAPPED_COMPLETION_ROUTINE a4)
-{
-    EnterFunc();
-
-    BOOL rv = 0;
-    __try {
-        rv = Real_ReadFileEx(a0, a1, a2, a3, a4);
-    } __finally {
-        if (rv) {
-            OpenFiles::SetRead(a0, a2);
-        }
-        ExitFunc();
-    };
-    return rv;
-}
-
-BOOL WINAPI Mine_WriteFile(HANDLE a0,
-                           LPCVOID a1,
-                           DWORD a2,
-                           LPDWORD a3,
-                           LPOVERLAPPED a4)
-{
-    EnterFunc();
-
-    BOOL rv = 0;
-    __try {
-        rv = Real_WriteFile(a0, a1, a2, a3, a4);
-    } __finally {
-        OpenFiles::SetWrite(a0, a2);
-        ExitFunc();
-    };
-    return rv;
-}
-
-BOOL WINAPI Mine_WriteFileEx(HANDLE a0,
-                             LPCVOID a1,
-                             DWORD a2,
-                             LPOVERLAPPED a3,
-                             LPOVERLAPPED_COMPLETION_ROUTINE a4)
-{
-    EnterFunc();
-
-    BOOL rv = 0;
-    __try {
-        rv = Real_WriteFileEx(a0, a1, a2, a3, a4);
-    } __finally {
-        OpenFiles::SetWrite(a0, a2);
-        ExitFunc();
-    };
-    return rv;
-}
-
-BOOL WINAPI Mine_WriteConsoleA(HANDLE a0,
-                                  const VOID* a1,
-                                  DWORD a2,
-                                  LPDWORD a3,
-                                  LPVOID a4)
-{
-    EnterFunc();
-
-    BOOL rv = 0;
-    __try {
-        rv = Real_WriteConsoleA(a0, a1, a2, a3, a4);
-    } __finally {
-        OpenFiles::SetWrite(a0, a2);
-        ExitFunc();
-    };
-    return rv;
-}
-
-BOOL WINAPI Mine_WriteConsoleW(HANDLE a0,
-                                  const VOID* a1,
-                                  DWORD a2,
-                                  LPDWORD a3,
-                                  LPVOID a4)
-{
-    EnterFunc();
-
-    BOOL rv = 0;
-    __try {
-        rv = Real_WriteConsoleW(a0, a1, a2, a3, a4);
-    } __finally {
-        OpenFiles::SetWrite(a0, a2);
-        ExitFunc();
-    };
-    return rv;
-}
-
-//////////////////////////////////////////////////////////////////////////////
-//
-DWORD WINAPI Mine_ExpandEnvironmentStringsA(PCSTR lpSrc, PCHAR lpDst, DWORD nSize)
-{
-    EnterFunc();
-    DWORD rv = 0;
-    __try {
-        rv = Real_ExpandEnvironmentStringsA(lpSrc, lpDst, nSize);
-    }
-    __finally {
-        if (rv > 0) {
-#if 0
-            Print("<!-- ExpandEnvironmentStringsA(%he) -->\n", lpSrc);
-#endif
-        }
-        ExitFunc();
-    };
-    return rv;
-}
-
-DWORD WINAPI Mine_ExpandEnvironmentStringsW(PCWSTR lpSrc, PWCHAR lpDst, DWORD nSize)
-{
-    EnterFunc();
-    DWORD rv = 0;
-    __try {
-        rv = Real_ExpandEnvironmentStringsW(lpSrc, lpDst, nSize);
-    }
-    __finally {
-        if (rv > 0) {
-#if 0
-            Print("<!-- ExpandEnvironmentStringsW(%le) -->\n", lpSrc);
-#endif
-        }
-        ExitFunc();
-    };
-    return rv;
-}
-
-DWORD WINAPI Mine_GetEnvironmentVariableA(PCSTR lpName, PCHAR lpBuffer, DWORD nSize)
-{
-    EnterFunc();
-    DWORD rv = 0;
-    __try {
-        rv = Real_GetEnvironmentVariableA(lpName, lpBuffer, nSize);
-        //        if (rv > 0 && rv < nSize && lpBuffer != NULL) {
-        //            EnvVars::Used(lpName);
-        //        }
-    }
-    __finally {
-        EnvVars::Used(lpName);
-        ExitFunc();
-    };
-    return rv;
-}
-
-DWORD WINAPI Mine_GetEnvironmentVariableW(PCWSTR lpName, PWCHAR lpBuffer, DWORD nSize)
-{
-    EnterFunc();
-    DWORD rv = 0;
-    __try {
-        rv = Real_GetEnvironmentVariableW(lpName, lpBuffer, nSize);
-        //        if (rv > 0 && rv < nSize && lpBuffer != NULL) {
-        //            EnvVars::Used(lpName);
-        //        }
-    }
-    __finally {
-        EnvVars::Used(lpName);
-        ExitFunc();
-    };
-    return rv;
-}
-
-PCWSTR CDECL Mine_wgetenv(PCWSTR var)
-{
-    EnterFunc();
-    PCWSTR rv = 0;
-    __try {
-        rv = Real_wgetenv(var);
-        //        if (rv != NULL) {
-        //            EnvVars::Used(var);
-        //        }
-    }
-    __finally {
-        EnvVars::Used(var);
-        ExitFunc();
-    }
-    return rv;
-}
-
-PCSTR CDECL Mine_getenv(PCSTR var)
-{
-    EnterFunc();
-    PCSTR rv = 0;
-    __try {
-        rv = Real_getenv(var);
-        //        if (rv) {
-        //            EnvVars::Used(var);
-        //        }
-    }
-    __finally {
-        EnvVars::Used(var);
-        ExitFunc();
-    }
-    return rv;
-}
-
-DWORD CDECL Mine_getenv_s(DWORD *pValue, PCHAR pBuffer, DWORD cBuffer, PCSTR varname)
-{
-    EnterFunc();
-    DWORD rv = 0;
-    __try {
-        DWORD value;
-        if (pValue == NULL) {
-            pValue = &value;
-        }
-        rv = Real_getenv_s(pValue, pBuffer, cBuffer, varname);
-        //        if (rv == 0 && *pValue > 0) {
-        //            EnvVars::Used(varname);
-        //        }
-    }
-    __finally {
-        EnvVars::Used(varname);
-        ExitFunc();
-    }
-    return rv;
-}
-
-DWORD CDECL Mine_wgetenv_s(DWORD *pValue, PWCHAR pBuffer, DWORD cBuffer, PCWSTR varname)
-{
-    EnterFunc();
-    DWORD rv = 0;
-    __try {
-        DWORD value;
-        if (pValue == NULL) {
-            pValue = &value;
-        }
-        rv = Real_wgetenv_s(pValue, pBuffer, cBuffer, varname);
-        //        if (rv == 0 && *pValue > 0) {
-        //            EnvVars::Used(varname);
-        //        }
-    }
-    __finally {
-        EnvVars::Used(varname);
-        ExitFunc();
-    }
-    return rv;
-}
-
-DWORD CDECL Mine_dupenv_s(PCHAR *ppBuffer, DWORD *pcBuffer, PCSTR varname)
-{
-    EnterFunc();
-    DWORD rv = 0;
-    __try {
-        PCHAR pb;
-        DWORD cb;
-        if (ppBuffer == NULL) {
-            ppBuffer = &pb;
-        }
-        if (pcBuffer == NULL) {
-            pcBuffer = &cb;
-        }
-        rv = Real_dupenv_s(ppBuffer, pcBuffer, varname);
-        //        if (rv == 0 && *pcBuffer > 0 && *ppBuffer != NULL) {
-        //            EnvVars::Used(varname);
-        //        }
-    }
-    __finally {
-        EnvVars::Used(varname);
-        ExitFunc();
-    }
-    return rv;
-}
-
-DWORD CDECL Mine_wdupenv_s(PWCHAR *ppBuffer, DWORD *pcBuffer, PCWSTR varname)
-{
-    EnterFunc();
-    DWORD rv = 0;
-    __try {
-        PWCHAR pb;
-        DWORD cb;
-        if (ppBuffer == NULL) {
-            ppBuffer = &pb;
-        }
-        if (pcBuffer == NULL) {
-            pcBuffer = &cb;
-        }
-        rv = Real_wdupenv_s(ppBuffer, pcBuffer, varname);
-        //        if (rv == 0 && *pcBuffer > 0 && *ppBuffer != NULL) {
-        //            EnvVars::Used(varname);
-        //        }
-    }
-    __finally {
-        EnvVars::Used(varname);
-        ExitFunc();
-    }
-    return rv;
-}
-
-
 /////////////////////////////////////////////////////////////
 // AttachDetours
 //
@@ -3762,40 +2752,40 @@ LONG AttachDetours(VOID)
     DetourAttach(&(PVOID&)Real_PrivCopyFileExW, Mine_PrivCopyFileExW);
     DetourAttach(&(PVOID&)Real_CreateHardLinkA, Mine_CreateHardLinkA);
     DetourAttach(&(PVOID&)Real_CreateHardLinkW, Mine_CreateHardLinkW);
-    DetourAttach(&(PVOID&)Real_CreateDirectoryW, Mine_CreateDirectoryW);
-    DetourAttach(&(PVOID&)Real_CreateDirectoryExW, Mine_CreateDirectoryExW);
-    DetourAttach(&(PVOID&)Real_CreateFileW, Mine_CreateFileW);
-    DetourAttach(&(PVOID&)Real_CreatePipe, Mine_CreatePipe);
-    DetourAttach(&(PVOID&)Real_CreateFileMappingW, Mine_CreateFileMappingW);
-    DetourAttach(&(PVOID&)Real_CloseHandle, Mine_CloseHandle);
-    DetourAttach(&(PVOID&)Real_DuplicateHandle, Mine_DuplicateHandle);
+    // DetourAttach(&(PVOID&)Real_CreateDirectoryW, Mine_CreateDirectoryW);
+    // DetourAttach(&(PVOID&)Real_CreateDirectoryExW, Mine_CreateDirectoryExW);
+    // DetourAttach(&(PVOID&)Real_CreateFileW, Mine_CreateFileW);
+    // DetourAttach(&(PVOID&)Real_CreatePipe, Mine_CreatePipe);
+    // DetourAttach(&(PVOID&)Real_CreateFileMappingW, Mine_CreateFileMappingW);
+    // DetourAttach(&(PVOID&)Real_CloseHandle, Mine_CloseHandle);
+    // DetourAttach(&(PVOID&)Real_DuplicateHandle, Mine_DuplicateHandle);
     DetourAttach(&(PVOID&)Real_CreateProcessW, Mine_CreateProcessW);
     DetourAttach(&(PVOID&)Real_CreateProcessA, Mine_CreateProcessA);
-    DetourAttach(&(PVOID&)Real_DeleteFileW, Mine_DeleteFileW);
-    DetourAttach(&(PVOID&)Real_DeviceIoControl, Mine_DeviceIoControl);
-    DetourAttach(&(PVOID&)Real_GetFileAttributesW, Mine_GetFileAttributesW);
-    DetourAttach(&(PVOID&)Real_MoveFileA, Mine_MoveFileA);
-    DetourAttach(&(PVOID&)Real_MoveFileW, Mine_MoveFileW);
-    DetourAttach(&(PVOID&)Real_MoveFileExA, Mine_MoveFileExA);
-    DetourAttach(&(PVOID&)Real_MoveFileExW, Mine_MoveFileExW);
-    DetourAttach(&(PVOID&)Real_MoveFileWithProgressW, Mine_MoveFileWithProgressW);
-    DetourAttach(&(PVOID&)Real_SetStdHandle, Mine_SetStdHandle);
-    DetourAttach(&(PVOID&)Real_LoadLibraryA, Mine_LoadLibraryA);
-    DetourAttach(&(PVOID&)Real_LoadLibraryW, Mine_LoadLibraryW);
-    DetourAttach(&(PVOID&)Real_LoadLibraryExA, Mine_LoadLibraryExA);
-    DetourAttach(&(PVOID&)Real_LoadLibraryExW, Mine_LoadLibraryExW);
-    DetourAttach(&(PVOID&)Real_SetFilePointer, Mine_SetFilePointer);
-    DetourAttach(&(PVOID&)Real_SetFilePointerEx, Mine_SetFilePointerEx);
-    DetourAttach(&(PVOID&)Real_ReadFile, Mine_ReadFile);
-    DetourAttach(&(PVOID&)Real_ReadFileEx, Mine_ReadFileEx);
-    DetourAttach(&(PVOID&)Real_WriteFile, Mine_WriteFile);
-    DetourAttach(&(PVOID&)Real_WriteFileEx, Mine_WriteFileEx);
-    DetourAttach(&(PVOID&)Real_WriteConsoleA, Mine_WriteConsoleA);
-    DetourAttach(&(PVOID&)Real_WriteConsoleW, Mine_WriteConsoleW);
-    DetourAttach(&(PVOID&)Real_ExpandEnvironmentStringsA, Mine_ExpandEnvironmentStringsA);
-    DetourAttach(&(PVOID&)Real_ExpandEnvironmentStringsW, Mine_ExpandEnvironmentStringsW);
-    DetourAttach(&(PVOID&)Real_GetEnvironmentVariableA, Mine_GetEnvironmentVariableA);
-    DetourAttach(&(PVOID&)Real_GetEnvironmentVariableW, Mine_GetEnvironmentVariableW);
+    // DetourAttach(&(PVOID&)Real_DeleteFileW, Mine_DeleteFileW);
+    // DetourAttach(&(PVOID&)Real_DeviceIoControl, Mine_DeviceIoControl);
+    // DetourAttach(&(PVOID&)Real_GetFileAttributesW, Mine_GetFileAttributesW);
+    // DetourAttach(&(PVOID&)Real_MoveFileA, Mine_MoveFileA);
+    // DetourAttach(&(PVOID&)Real_MoveFileW, Mine_MoveFileW);
+    // DetourAttach(&(PVOID&)Real_MoveFileExA, Mine_MoveFileExA);
+    // DetourAttach(&(PVOID&)Real_MoveFileExW, Mine_MoveFileExW);
+    // DetourAttach(&(PVOID&)Real_MoveFileWithProgressW, Mine_MoveFileWithProgressW);
+    // DetourAttach(&(PVOID&)Real_SetStdHandle, Mine_SetStdHandle);
+    // DetourAttach(&(PVOID&)Real_LoadLibraryA, Mine_LoadLibraryA);
+    // DetourAttach(&(PVOID&)Real_LoadLibraryW, Mine_LoadLibraryW);
+    // DetourAttach(&(PVOID&)Real_LoadLibraryExA, Mine_LoadLibraryExA);
+    // DetourAttach(&(PVOID&)Real_LoadLibraryExW, Mine_LoadLibraryExW);
+    // DetourAttach(&(PVOID&)Real_SetFilePointer, Mine_SetFilePointer);
+    // DetourAttach(&(PVOID&)Real_SetFilePointerEx, Mine_SetFilePointerEx);
+    // DetourAttach(&(PVOID&)Real_ReadFile, Mine_ReadFile);
+    // DetourAttach(&(PVOID&)Real_ReadFileEx, Mine_ReadFileEx);
+    // DetourAttach(&(PVOID&)Real_WriteFile, Mine_WriteFile);
+    // DetourAttach(&(PVOID&)Real_WriteFileEx, Mine_WriteFileEx);
+    // DetourAttach(&(PVOID&)Real_WriteConsoleA, Mine_WriteConsoleA);
+    // DetourAttach(&(PVOID&)Real_WriteConsoleW, Mine_WriteConsoleW);
+    // DetourAttach(&(PVOID&)Real_ExpandEnvironmentStringsA, Mine_ExpandEnvironmentStringsA);
+    // DetourAttach(&(PVOID&)Real_ExpandEnvironmentStringsW, Mine_ExpandEnvironmentStringsW);
+    // DetourAttach(&(PVOID&)Real_GetEnvironmentVariableA, Mine_GetEnvironmentVariableA);
+    // DetourAttach(&(PVOID&)Real_GetEnvironmentVariableW, Mine_GetEnvironmentVariableW);
 
     return DetourTransactionCommit();
 }
@@ -3812,47 +2802,40 @@ LONG DetachDetours(VOID)
     DetourDetach(&(PVOID&)Real_PrivCopyFileExW, Mine_PrivCopyFileExW);
     DetourDetach(&(PVOID&)Real_CreateHardLinkA, Mine_CreateHardLinkA);
     DetourDetach(&(PVOID&)Real_CreateHardLinkW, Mine_CreateHardLinkW);
-    DetourDetach(&(PVOID&)Real_CreateDirectoryW, Mine_CreateDirectoryW);
-    DetourDetach(&(PVOID&)Real_CreateDirectoryExW, Mine_CreateDirectoryExW);
-    DetourDetach(&(PVOID&)Real_CreateFileW, Mine_CreateFileW);
-    DetourDetach(&(PVOID&)Real_CreatePipe, Mine_CreatePipe);
-    DetourDetach(&(PVOID&)Real_CreateFileMappingW, Mine_CreateFileMappingW);
-    DetourDetach(&(PVOID&)Real_CloseHandle, Mine_CloseHandle);
-    DetourDetach(&(PVOID&)Real_DuplicateHandle, Mine_DuplicateHandle);
+    // DetourDetach(&(PVOID&)Real_CreateDirectoryW, Mine_CreateDirectoryW);
+    // DetourDetach(&(PVOID&)Real_CreateDirectoryExW, Mine_CreateDirectoryExW);
+    // DetourDetach(&(PVOID&)Real_CreateFileW, Mine_CreateFileW);
+    // DetourDetach(&(PVOID&)Real_CreatePipe, Mine_CreatePipe);
+    // DetourDetach(&(PVOID&)Real_CreateFileMappingW, Mine_CreateFileMappingW);
+    // DetourDetach(&(PVOID&)Real_CloseHandle, Mine_CloseHandle);
+    // DetourDetach(&(PVOID&)Real_DuplicateHandle, Mine_DuplicateHandle);
     DetourDetach(&(PVOID&)Real_CreateProcessW, Mine_CreateProcessW);
     DetourDetach(&(PVOID&)Real_CreateProcessA, Mine_CreateProcessA);
-    DetourDetach(&(PVOID&)Real_DeleteFileW, Mine_DeleteFileW);
-    DetourDetach(&(PVOID&)Real_DeviceIoControl, Mine_DeviceIoControl);
-    DetourDetach(&(PVOID&)Real_GetFileAttributesW, Mine_GetFileAttributesW);
-    DetourDetach(&(PVOID&)Real_MoveFileA, Mine_MoveFileA);
-    DetourDetach(&(PVOID&)Real_MoveFileW, Mine_MoveFileW);
-    DetourDetach(&(PVOID&)Real_MoveFileExA, Mine_MoveFileExA);
-    DetourDetach(&(PVOID&)Real_MoveFileExW, Mine_MoveFileExW);
-    DetourDetach(&(PVOID&)Real_MoveFileWithProgressW, Mine_MoveFileWithProgressW);
-    DetourDetach(&(PVOID&)Real_SetStdHandle, Mine_SetStdHandle);
-    DetourDetach(&(PVOID&)Real_LoadLibraryA, Mine_LoadLibraryA);
-    DetourDetach(&(PVOID&)Real_LoadLibraryW, Mine_LoadLibraryW);
-    DetourDetach(&(PVOID&)Real_LoadLibraryExA, Mine_LoadLibraryExA);
-    DetourDetach(&(PVOID&)Real_LoadLibraryExW, Mine_LoadLibraryExW);
-    DetourDetach(&(PVOID&)Real_SetFilePointer, Mine_SetFilePointer);
-    DetourDetach(&(PVOID&)Real_SetFilePointerEx, Mine_SetFilePointerEx);
-    DetourDetach(&(PVOID&)Real_ReadFile, Mine_ReadFile);
-    DetourDetach(&(PVOID&)Real_ReadFileEx, Mine_ReadFileEx);
-    DetourDetach(&(PVOID&)Real_WriteFile, Mine_WriteFile);
-    DetourDetach(&(PVOID&)Real_WriteFileEx, Mine_WriteFileEx);
-    DetourDetach(&(PVOID&)Real_WriteConsoleA, Mine_WriteConsoleA);
-    DetourDetach(&(PVOID&)Real_WriteConsoleW, Mine_WriteConsoleW);
-    DetourDetach(&(PVOID&)Real_ExpandEnvironmentStringsA, Mine_ExpandEnvironmentStringsA);
-    DetourDetach(&(PVOID&)Real_ExpandEnvironmentStringsW, Mine_ExpandEnvironmentStringsW);
-    DetourDetach(&(PVOID&)Real_GetEnvironmentVariableA, Mine_GetEnvironmentVariableA);
-    DetourDetach(&(PVOID&)Real_GetEnvironmentVariableW, Mine_GetEnvironmentVariableW);
-
-    if (Real_getenv) { DetourDetach(&(PVOID&)Real_getenv, Mine_getenv); }
-    if (Real_getenv_s) { DetourDetach(&(PVOID&)Real_getenv_s, Mine_getenv_s); }
-    if (Real_wgetenv) { DetourDetach(&(PVOID&)Real_wgetenv, Mine_wgetenv); }
-    if (Real_wgetenv_s) { DetourDetach(&(PVOID&)Real_wgetenv, Mine_wgetenv_s); }
-    if (Real_dupenv_s) { DetourDetach(&(PVOID&)Real_dupenv_s, Mine_dupenv_s); }
-    if (Real_wdupenv_s) { DetourDetach(&(PVOID&)Real_wdupenv_s, Mine_wdupenv_s); }
+    // DetourDetach(&(PVOID&)Real_DeleteFileW, Mine_DeleteFileW);
+    // DetourDetach(&(PVOID&)Real_DeviceIoControl, Mine_DeviceIoControl);
+    // DetourDetach(&(PVOID&)Real_GetFileAttributesW, Mine_GetFileAttributesW);
+    // DetourDetach(&(PVOID&)Real_MoveFileA, Mine_MoveFileA);
+    // DetourDetach(&(PVOID&)Real_MoveFileW, Mine_MoveFileW);
+    // DetourDetach(&(PVOID&)Real_MoveFileExA, Mine_MoveFileExA);
+    // DetourDetach(&(PVOID&)Real_MoveFileExW, Mine_MoveFileExW);
+    // DetourDetach(&(PVOID&)Real_MoveFileWithProgressW, Mine_MoveFileWithProgressW);
+    // DetourDetach(&(PVOID&)Real_SetStdHandle, Mine_SetStdHandle);
+    // DetourDetach(&(PVOID&)Real_LoadLibraryA, Mine_LoadLibraryA);
+    // DetourDetach(&(PVOID&)Real_LoadLibraryW, Mine_LoadLibraryW);
+    // DetourDetach(&(PVOID&)Real_LoadLibraryExA, Mine_LoadLibraryExA);
+    // DetourDetach(&(PVOID&)Real_LoadLibraryExW, Mine_LoadLibraryExW);
+    // DetourDetach(&(PVOID&)Real_SetFilePointer, Mine_SetFilePointer);
+    // DetourDetach(&(PVOID&)Real_SetFilePointerEx, Mine_SetFilePointerEx);
+    // DetourDetach(&(PVOID&)Real_ReadFile, Mine_ReadFile);
+    // DetourDetach(&(PVOID&)Real_ReadFileEx, Mine_ReadFileEx);
+    // DetourDetach(&(PVOID&)Real_WriteFile, Mine_WriteFile);
+    // DetourDetach(&(PVOID&)Real_WriteFileEx, Mine_WriteFileEx);
+    // DetourDetach(&(PVOID&)Real_WriteConsoleA, Mine_WriteConsoleA);
+    // DetourDetach(&(PVOID&)Real_WriteConsoleW, Mine_WriteConsoleW);
+    // DetourDetach(&(PVOID&)Real_ExpandEnvironmentStringsA, Mine_ExpandEnvironmentStringsA);
+    // DetourDetach(&(PVOID&)Real_ExpandEnvironmentStringsW, Mine_ExpandEnvironmentStringsW);
+    // DetourDetach(&(PVOID&)Real_GetEnvironmentVariableA, Mine_GetEnvironmentVariableA);
+    // DetourDetach(&(PVOID&)Real_GetEnvironmentVariableW, Mine_GetEnvironmentVariableW);
 
     return DetourTransactionCommit();
 }
@@ -3974,37 +2957,44 @@ Exit0:
 
 // const DWORD COPY_FILE_COPY_SYMLINK = 0x00000800;
 
-BOOLEAN NoteAndOverrideCopy(FileInfo *pSrc, FileInfo *pDst, DWORD dwCopyFlags)
+BOOLEAN NoteAndOverrideCopy(PCWSTR pwzSrc, PCWSTR pwzDst, DWORD dwCopyFlags)
 {
-    pSrc->m_fRead = TRUE;
-    pDst->m_fRead = TRUE;
+    // pSrc->m_fRead = TRUE;
+    // pDst->m_fRead = TRUE;
 
     if (0 != (dwCopyFlags & (COPY_FILE_COPY_SYMLINK|COPY_FILE_OPEN_SOURCE_FOR_WRITE))) {
-        Print("<!-- CopyFile %le to %le 0x%x (clone skipped) -->\n", pSrc->m_pwzPath, pDst->m_pwzPath, dwCopyFlags);
+        Print("<!-- CopyFile %le to %le 0x%x (clone skipped) -->\n", pwzSrc, pwzDst, dwCopyFlags);
         return FALSE;
     }
 
-    if (Clone(pSrc->m_pwzPath, pDst->m_pwzPath, 0 != (dwCopyFlags & COPY_FILE_FAIL_IF_EXISTS))) {
-        Print("<!-- CopyFile %le to %le 0x%x (clone success) -->\n", pSrc->m_pwzPath, pDst->m_pwzPath, dwCopyFlags);
+    if (Clone(pwzSrc, pwzDst, 0 != (dwCopyFlags & COPY_FILE_FAIL_IF_EXISTS))) {
+        Print("<!-- CopyFile %le to %le 0x%x (clone success) -->\n", pwzSrc, pwzDst, dwCopyFlags);
         return TRUE;
     } else {
-        Print("<!-- CopyFile %le to %le 0x%x (clone failed 0x%x) -->\n", pSrc->m_pwzPath, pDst->m_pwzPath, dwCopyFlags, GetLastError());
+        Print("<!-- CopyFile %le to %le 0x%x (clone failed 0x%x) -->\n", pwzSrc, pwzDst, dwCopyFlags, GetLastError());
         return FALSE;
     }
 }
 
 BOOLEAN NoteAndOverrideCopy(PCSTR pszSrc, PCSTR pszDst, DWORD dwCopyFlags)
 {
-    FileInfo *pSrc = FileNames::FindPartial(pszSrc);
-    FileInfo *pDst = FileNames::FindPartial(pszDst);
-    return NoteAndOverrideCopy(pSrc, pDst, dwCopyFlags);
-}
+    WCHAR wzSrc[MAX_PATH];
+    PWCHAR pwzSrc = wzSrc;
 
-BOOLEAN NoteAndOverrideCopy(PCWSTR pwzSrc, PCWSTR pwzDst, DWORD dwCopyFlags)
-{
-    FileInfo *pSrc = FileNames::FindPartial(pwzSrc);
-    FileInfo *pDst = FileNames::FindPartial(pwzDst);
-    return NoteAndOverrideCopy(pSrc, pDst, dwCopyFlags);
+    while (*pszSrc) {
+        *pwzSrc++ = *pszSrc++;
+    }
+    *pwzSrc = '\0';
+
+    WCHAR wzDst[MAX_PATH];
+    PWCHAR pwzDst = wzDst;
+
+    while (*pszDst) {
+        *pwzDst++ = *pszDst++;
+    }
+    *pwzDst = '\0';
+
+    return NoteAndOverrideCopy(wzSrc, wzDst, dwCopyFlags);
 }
 
 VOID NoteRead(PCSTR psz)
@@ -4679,13 +3669,6 @@ int WINAPI Mine_EntryPoint(VOID)
 
         DetourTransactionBegin();
         DetourUpdateThread(GetCurrentThread());
-
-        DetourAttachIf(&(PVOID&)Real_getenv, Mine_getenv);
-        DetourAttachIf(&(PVOID&)Real_getenv_s, Mine_getenv_s);
-        DetourAttachIf(&(PVOID&)Real_wgetenv, Mine_wgetenv);
-        DetourAttachIf(&(PVOID&)Real_wgetenv, Mine_wgetenv_s);
-        DetourAttachIf(&(PVOID&)Real_dupenv_s, Mine_dupenv_s);
-        DetourAttachIf(&(PVOID&)Real_wdupenv_s, Mine_wdupenv_s);
 
         DetourTransactionCommit();
     }
