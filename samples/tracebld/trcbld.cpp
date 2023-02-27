@@ -2962,6 +2962,12 @@ Exit0:
 
 BOOLEAN NoteAndOverrideCopy(PCWSTR pwzSrc, PCWSTR pwzDst, DWORD dwCopyFlags)
 {
+    // (void)pwzSrc;
+    // (void)pwzDst;
+    // (void)dwCopyFlags;
+
+    // return FALSE;
+
     // pSrc->m_fRead = TRUE;
     // pDst->m_fRead = TRUE;
 
